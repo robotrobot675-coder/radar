@@ -128,7 +128,7 @@ let alertAudio=null;
 let eyeEnabled=true,eyeModelReady=false,eyeModelLoading=false;
 let faceModel=null,closedFrames=0,eyeSirenOn=false,lastEar=0;
 const EAR_THRESHOLD=0.22,EAR_CONSECUTIVE=2;
-const FACE_CDN='https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@master/weights';
+const FACE_CDN='weights';
 
 function ear(eye){
   const d1=Math.hypot(eye[1].x-eye[5].x,eye[1].y-eye[5].y);
