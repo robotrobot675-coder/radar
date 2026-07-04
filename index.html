@@ -5,10 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta http-equiv="Permissions-Policy" content="camera=self">
 <title>PHONE RADAR + EYE SIREN</title>
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="lib/tf.min.js"></script>
+<script src="lib/coco-ssd.min.js"></script>
+<script src="lib/face-api.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
 <style>
 *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
@@ -129,19 +128,12 @@ let alertAudio=null;
 let eyeEnabled=true,eyeModelReady=false,eyeModelLoading=false;
 let faceModel=null,closedFrames=0,eyeSirenOn=false,lastEar=0;
 const EAR_THRESHOLD=0.22,EAR_CONSECUTIVE=2;
-const LEFT_EYE=[33,160,158,133,153,144];
-const RIGHT_EYE=[362,385,387,263,373,380];
-let faceMesh=null,faceResults=null;
 
-function ear(pts,li,ri){
-  const p=i=>pts[i];
-  const d1L=Math.hypot(p(li[1]).x-p(li[5]).x,p(li[1]).y-p(li[5]).y);
-  const d2L=Math.hypot(p(li[2]).x-p(li[4]).x,p(li[2]).y-p(li[4]).y);
-  const d3L=Math.hypot(p(li[0]).x-p(li[3]).x,p(li[0]).y-p(li[3]).y);
-  const d1R=Math.hypot(p(ri[1]).x-p(ri[5]).x,p(ri[1]).y-p(ri[5]).y);
-  const d2R=Math.hypot(p(ri[2]).x-p(ri[4]).x,p(ri[2]).y-p(ri[4]).y);
-  const d3R=Math.hypot(p(ri[0]).x-p(ri[3]).x,p(ri[0]).y-p(ri[3]).y);
-  return ((d1L+d2L)/(2*d3L)+(d1R+d2R)/(2*d3R))/2;
+function ear(eye){
+  const d1=Math.hypot(eye[1].x-eye[5].x,eye[1].y-eye[5].y);
+  const d2=Math.hypot(eye[2].x-eye[4].x,eye[2].y-eye[4].y);
+  const d3=Math.hypot(eye[0].x-eye[3].x,eye[0].y-eye[3].y);
+  return (d1+d2)/(2*d3);
 }
 
 function stopAlert(){
@@ -160,10 +152,8 @@ async function loadFaceModel(){
   eyeModelLoading=true;
   addLog('Loading face model...',false);
   try{
-    faceMesh=new FaceMesh({locateFile:f=>'https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/'+f});
-    faceMesh.setOptions({maxNumFaces:1,refineLandmarks:true,minDetectionConfidence:0.5,minTrackingConfidence:0.5});
-    faceMesh.onResults(r=>{faceResults=r;});
-    await faceMesh.initialize();
+    await faceapi.loadTinyFaceDetectorModel('weights');
+    await faceapi.loadFaceLandmarkTinyModel('weights');
     faceModel=true;eyeModelReady=true;
     addLog('Face AI ready!',false);
   }catch(e){
@@ -186,16 +176,16 @@ function toggleEye(){
   }else if(running&&!eyeModelReady&&!eyeModelLoading)loadFaceModel();
 }
 
-function drawFace(lm){
-  const w=canvas.width,h=canvas.height;
+function drawFace(landmarks){
+  const pts=landmarks.getPositions();
   ctx.fillStyle='#00ffcc';
-  lm.forEach(p=>{ctx.beginPath();ctx.arc(p.x*w,p.y*h,2,0,Math.PI*2);ctx.fill();});
-  const drawEye=(idx)=>{
-    ctx.strokeStyle='#00ffcc';ctx.lineWidth=1.5;ctx.beginPath();
-    idx.forEach((i,j)=>{const x=lm[i].x*w,y=lm[i].y*h;if(j===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);});
-    ctx.closePath();ctx.stroke();
-  };
-  drawEye(LEFT_EYE);drawEye(RIGHT_EYE);
+  pts.forEach(p=>{ctx.beginPath();ctx.arc(p.x,p.y,2,0,Math.PI*2);ctx.fill();});
+  const leftE=landmarks.getLeftEye(),rightE=landmarks.getRightEye();
+  ctx.strokeStyle='#00ffcc';ctx.lineWidth=1.5;
+  leftE.forEach((p,i)=>{if(i===0)ctx.beginPath();if(i===0)ctx.moveTo(p.x,p.y);else ctx.lineTo(p.x,p.y);});
+  ctx.closePath();ctx.stroke();
+  rightE.forEach((p,i)=>{if(i===0)ctx.beginPath();if(i===0)ctx.moveTo(p.x,p.y);else ctx.lineTo(p.x,p.y);});
+  ctx.closePath();ctx.stroke();
 }
 
 function playAlert(){
@@ -330,16 +320,22 @@ async function detectLoop(){
     detecting=false;
   }
 
-  // Face / Eye Detection (MediaPipe)
-  if(eyeEnabled&&eyeModelReady&&faceMesh){
+  // Face / Eye Detection (face-api)
+  if(eyeEnabled&&eyeModelReady&&faceModel){
     try{
-      await faceMesh.send({image:video});
-      if(faceResults&&faceResults.multiFaceLandmarks&&faceResults.multiFaceLandmarks.length>0){
-        const lm=faceResults.multiFaceLandmarks[0];
-        lastEar=ear(lm,LEFT_EYE,RIGHT_EYE);
-        document.getElementById('earVal').textContent=lastEar.toFixed(2);
+      const det=await faceapi.detectSingleFace(video,new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks();
+      if(det){
+        const landmarks=det.landmarks;
+        let leftEye=[],rightEye=[];
+        const lPos=landmarks.getLeftEye(),rPos=landmarks.getRightEye();
+        lPos.forEach(p=>leftEye.push({x:p.x,y:p.y}));
+        rPos.forEach(p=>rightEye.push({x:p.x,y:p.y}));
+        const earL=ear(leftEye),earR=ear(rightEye);
+        const avgEar=(earL+earR)/2;
+        lastEar=avgEar;
+        document.getElementById('earVal').textContent=avgEar.toFixed(2);
 
-        if(lastEar<EAR_THRESHOLD){
+        if(avgEar<EAR_THRESHOLD){
           closedFrames++;
           if(closedFrames>=EAR_CONSECUTIVE){
             document.getElementById('eyeVal').textContent='EYES CLOSED';
@@ -349,7 +345,7 @@ async function detectLoop(){
               totalAlerts++;
               document.getElementById('alertsVal').textContent=totalAlerts;
               setStatus('EYES CLOSED!','alert');
-              addLog('EYES CLOSED! EAR='+lastEar.toFixed(2),true);
+              addLog('EYES CLOSED! EAR='+avgEar.toFixed(2),true);
               document.getElementById('alertFlash').classList.add('active');
               setTimeout(()=>document.getElementById('alertFlash').classList.remove('active'),300);
             }
@@ -360,7 +356,7 @@ async function detectLoop(){
           document.getElementById('eyeVal').style.color='#00ff88';
           if(eyeSirenOn){eyeSirenOn=false;stopAlert();}
         }
-        drawFace(lm);
+        drawFace(landmarks);
       }else{
         document.getElementById('eyeVal').textContent='NO FACE';
         document.getElementById('eyeVal').style.color='#ffaa00';
