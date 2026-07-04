@@ -7,7 +7,7 @@
 <title>PHONE RADAR + EYE SIREN</title>
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/face-landmarks-detection@1.0.2/dist/face-landmarks-detection.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
 <style>
 *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
@@ -128,14 +128,12 @@ let alertAudio=null;
 let eyeEnabled=true,eyeModelReady=false,eyeModelLoading=false;
 let faceModel=null,closedFrames=0,eyeSirenOn=false,lastEar=0;
 const EAR_THRESHOLD=0.22,EAR_CONSECUTIVE=2;
-const LEFT_EYE=[33,160,158,133,153,144];
-const RIGHT_EYE=[362,385,387,263,373,380];
+const FACE_CDN='https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@master/weights';
 
-function ear(pts,indices){
-  const p=i=>pts[indices[i]];
-  const d1=Math.hypot(p(1).x-p(5).x,p(1).y-p(5).y);
-  const d2=Math.hypot(p(2).x-p(4).x,p(2).y-p(4).y);
-  const d3=Math.hypot(p(0).x-p(3).x,p(0).y-p(3).y);
+function ear(eye){
+  const d1=Math.hypot(eye[1].x-eye[5].x,eye[1].y-eye[5].y);
+  const d2=Math.hypot(eye[2].x-eye[4].x,eye[2].y-eye[4].y);
+  const d3=Math.hypot(eye[0].x-eye[3].x,eye[0].y-eye[3].y);
   return (d1+d2)/(2*d3);
 }
 
@@ -155,11 +153,9 @@ async function loadFaceModel(){
   eyeModelLoading=true;
   addLog('Loading face model...',false);
   try{
-    faceModel=await faceLandmarksDetection.load(
-      faceLandmarksDetection.SupportedModels.MediaPipeFaceMesh,
-      {runtime:'tfjs',refineLandmarks:true,maxFaces:1}
-    );
-    eyeModelReady=true;
+    await faceapi.loadTinyFaceDetectorModel(FACE_CDN);
+    await faceapi.loadFaceLandmarkTinyModel(FACE_CDN);
+    faceModel=true;eyeModelReady=true;
     addLog('Face AI ready!',false);
   }catch(e){
     eyeModelReady=false;
@@ -181,15 +177,16 @@ function toggleEye(){
   }else if(running&&!eyeModelReady&&!eyeModelLoading)loadFaceModel();
 }
 
-function drawFace(pts){
+function drawFace(landmarks){
+  const pts=landmarks.getPositions();
   ctx.fillStyle='#00ffcc';
   pts.forEach(p=>{ctx.beginPath();ctx.arc(p.x,p.y,2,0,Math.PI*2);ctx.fill();});
-  const drawEye=(idx)=>{
-    ctx.strokeStyle='#00ffcc';ctx.lineWidth=1.5;ctx.beginPath();
-    idx.forEach((i,j)=>{if(j===0)ctx.moveTo(pts[i].x,pts[i].y);else ctx.lineTo(pts[i].x,pts[i].y);});
-    ctx.closePath();ctx.stroke();
-  };
-  drawEye(LEFT_EYE);drawEye(RIGHT_EYE);
+  const leftE=landmarks.getLeftEye(),rightE=landmarks.getRightEye();
+  ctx.strokeStyle='#00ffcc';ctx.lineWidth=1.5;
+  leftE.forEach((p,i)=>{if(i===0)ctx.beginPath();if(i===0)ctx.moveTo(p.x,p.y);else ctx.lineTo(p.x,p.y);});
+  ctx.closePath();ctx.stroke();
+  rightE.forEach((p,i)=>{if(i===0)ctx.beginPath();if(i===0)ctx.moveTo(p.x,p.y);else ctx.lineTo(p.x,p.y);});
+  ctx.closePath();ctx.stroke();
 }
 
 function playAlert(){
@@ -327,11 +324,14 @@ async function detectLoop(){
   // Face / Eye Detection
   if(eyeEnabled&&eyeModelReady&&faceModel){
     try{
-      const faces=await faceModel.estimateFaces(video);
-      if(faces&&faces.length>0){
-        const face=faces[0];
-        const pts=face.keypoints;
-        const earL=ear(pts,LEFT_EYE),earR=ear(pts,RIGHT_EYE);
+      const det=await faceapi.detectSingleFace(video,new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks();
+      if(det){
+        const landmarks=det.landmarks;
+        let leftEye=[],rightEye=[];
+        const lPos=landmarks.getLeftEye(),rPos=landmarks.getRightEye();
+        lPos.forEach(p=>leftEye.push({x:p.x,y:p.y}));
+        rPos.forEach(p=>rightEye.push({x:p.x,y:p.y}));
+        const earL=ear(leftEye),earR=ear(rightEye);
         const avgEar=(earL+earR)/2;
         lastEar=avgEar;
         document.getElementById('earVal').textContent=avgEar.toFixed(2);
@@ -357,7 +357,7 @@ async function detectLoop(){
           document.getElementById('eyeVal').style.color='#00ff88';
           if(eyeSirenOn){eyeSirenOn=false;stopAlert();}
         }
-        drawFace(pts);
+        drawFace(landmarks);
       }else{
         document.getElementById('eyeVal').textContent='NO FACE';
         document.getElementById('eyeVal').style.color='#ffaa00';
